@@ -55,14 +55,12 @@ client = TelegramClient(
     lang_code="ru"
 )
 
-EN_TO_RU = str.maketrans(
-    "`qwertyuiop[]asdfghjkl;'zxcvbnm,./~QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>?@",
-    "ёйцукенгшщзхъфывапролджэячсмитьбю.ЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,@\""
-)
-RU_TO_EN = str.maketrans(
-    "ёйцукенгшщзхъфывапролджэячсмитьбю.ЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,",
-    "`qwertyuiop[]asdfghjkl;'zxcvbnm,./~QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>?"
-)
+# Standard Keyboard Layout mapping (strictly identical lengths)
+EN_LAYOUT = "`1234567890-=qwertyuiop[]\\asdfghjkl;'zxcvbnm,./~@#$%^&QWERTYUIOP{}|ASDFGHJKL:\"ZXCVBNM<>?"
+RU_LAYOUT = "ё1234567890-=йцукенгшщзхъ\\фывапролджэячсмитьбю.Ё\"№;%:?ЙЦУКЕНГШЩЗХЪ/ФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,"
+
+EN_TO_RU = str.maketrans(EN_LAYOUT, RU_LAYOUT)
+RU_TO_EN = str.maketrans(RU_LAYOUT, EN_LAYOUT)
 
 
 def switch_layout(text: str) -> str:
@@ -107,8 +105,6 @@ async def handle_commands(event: events.NewMessage.Event):
     ai_query = ""
     is_clean_mode = False
 
-    # Check for clean/stealth mode prefix (e.g. .патрик- or .ии-)
-    # Character commands list: (prefixes, role, header)
     ai_definitions = [
         ([".патрик-", ".patrick-"], "patrick", "⭐️ **Патрик Стар:**", True),
         ([".патрик", ".patrick"], "patrick", "⭐️ **Патрик Стар:**", False),
@@ -132,7 +128,6 @@ async def handle_commands(event: events.NewMessage.Event):
                 ai_role = role
                 ai_header = header
                 is_clean_mode = clean
-                # Extract query after prefix
                 ai_query = text[len(p.strip()):].strip()
                 break
         if ai_role:
@@ -166,7 +161,6 @@ async def handle_commands(event: events.NewMessage.Event):
         prompt = ai_query or "Отреагируй на сообщение выше в своем характере."
         answer = await query_groq(user_prompt=prompt, system_role=ai_role, context_text=context)
 
-        # Clean mode sends purely the AI text without headers or dividers
         if is_clean_mode:
             formatted_response = answer
         else:
