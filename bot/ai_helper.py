@@ -1,13 +1,10 @@
 import os
 import logging
 import aiohttp
-from typing import Optional, List, Dict
+from typing import Optional
 
 logger = logging.getLogger("AIHelper")
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-# Prompts for different persona roles
 SYSTEM_PROMPTS = {
     "default": (
         "Ты — умный, остроумный и полезный AI-помощник в Telegram. "
@@ -19,7 +16,7 @@ SYSTEM_PROMPTS = {
     ),
     "patrick": (
         "Ты — Патрик Стар (Patrick Star) из мультсериала Спанч Боб. "
-        "Ты невероятно наивный, глупый, ленивый и смешной морской звезда. "
+        "Ты невероятно наивный, глупый, ленивый и смешной морская звезда. "
         "Ты постоянно путаешь сложные понятия, думаешь о еде (крабсбургеры, мороженое), "
         "своем любимом камне или друге Спанч Бобе. "
         "Отвечай в характерном стиле Патрика: забавно, абсурдно, простодушно, до 3 предложений."
@@ -49,72 +46,70 @@ SYSTEM_PROMPTS = {
 }
 
 
+async def query_gemini(system_prompt: str, user_prompt: str, api_key: str) -> Optional[str]:
+    """Queries Google Gemini via official REST API on Render."""
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-flash-latest",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro"
+    ]
+    
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": system_prompt}]
+            },
+            "contents": [
+                {
+                    "parts": [{"text": user_prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.85,
+                "maxOutputTokens": 400
+            }
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=12) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                            if text:
+                                return text.strip()
+                    else:
+                        err_text = await resp.text()
+                        logger.error(f"Gemini {model_name} error ({resp.status}): {err_text}")
+        except Exception as e:
+            logger.warning(f"Gemini {model_name} failed: {e}")
+            
+    return None
+
+
 async def query_groq(
     user_prompt: str,
     system_role: str = "default",
     context_text: Optional[str] = None
 ) -> str:
-    """
-    Sends request to Groq API (Llama-3.3-70b-versatile) or fallback open endpoint.
-    """
     system_content = SYSTEM_PROMPTS.get(system_role, SYSTEM_PROMPTS["default"])
     
     full_user_content = user_prompt
     if context_text:
-        full_user_content = f"Контекст сообщения, на которое отвечаем:\n«{context_text}»\n\nЗапрос/комментарий:\n{user_prompt}"
+        full_user_content = f"Контекст сообщения, на которое отвечаем:\n«{context_text}»\n\nЗапрос:\n{user_prompt}"
 
-    messages = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": full_user_content}
-    ]
+    gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    groq_key = (os.getenv("GROQ_API_KEY") or "").strip()
 
-    api_key = os.getenv("GROQ_API_KEY")
+    # 1. Google Gemini 2.5 Flash
+    if gemini_key:
+        res = await query_gemini(system_content, full_user_content, gemini_key)
+        if res:
+            return res
 
-    # 1. If Groq API Key is provided -> use ultra-fast Groq Llama 3.3 70B
-    if api_key:
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "model": "llama-3.3-70b-versatile",
-                    "messages": messages,
-                    "temperature": 0.8,
-                    "max_tokens": 500
-                }
-                async with session.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=15
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data["choices"][0]["message"]["content"].strip()
-                    else:
-                        err_text = await resp.text()
-                        logger.error(f"Groq API error ({resp.status}): {err_text}")
-        except Exception as e:
-            logger.exception(f"Error calling Groq API: {e}")
-
-    # 2. Fallback: Free open AI gateway (no key required)
-    try:
-        async with aiohttp.ClientSession() as session:
-            payload = {
-                "messages": messages,
-                "model": "openai"
-            }
-            async with session.post(
-                "https://text.pollinations.ai/",
-                json=payload,
-                timeout=20
-            ) as resp:
-                if resp.status == 200:
-                    text = await resp.text()
-                    return text.strip()
-    except Exception as e:
-        logger.exception(f"Error calling fallback AI: {e}")
-
-    return "⚠️ Не удалось получить ответ от нейросети. Проверьте GROQ_API_KEY в настройках."
+    # 2. Inform
+    return "⭐️ Ой, не удалось получить ответ! Проверьте переменную GEMINI_API_KEY в Render."
