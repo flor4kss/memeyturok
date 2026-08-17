@@ -211,18 +211,15 @@ def generate_meme(
 # 2. КЛАССИЧЕСКИЙ ДЕМОТИВАТОР (.дем)
 # -------------------------------------------------------------
 def generate_demotivator(image_bytes: bytes, text: str) -> bytes:
-    """Creates a classic 2000s demotivator with black frame, white border, and serif text."""
     image = Image.open(io.BytesIO(image_bytes))
     image = ImageOps.exif_transpose(image)
     image = image.convert("RGB")
 
-    # Resize input image to standard size
     img_w, img_h = image.size
     target_img_w = 700
     target_img_h = int(img_h * (target_img_w / img_w))
     image = image.resize((target_img_w, target_img_h), Image.Resampling.LANCZOS)
 
-    # Frame calculations
     pad_horiz = 70
     pad_top = 50
     text_area_h = 160
@@ -230,16 +227,13 @@ def generate_demotivator(image_bytes: bytes, text: str) -> bytes:
     canvas_w = target_img_w + (pad_horiz * 2)
     canvas_h = target_img_h + pad_top + text_area_h
 
-    # Black canvas
     canvas = Image.new("RGB", (canvas_w, canvas_h), color=(0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
-    # Paste image
     img_x = pad_horiz
     img_y = pad_top
     canvas.paste(image, (img_x, img_y))
 
-    # Outer white/grey border around image
     border_gap = 5
     draw.rectangle(
         [
@@ -250,7 +244,6 @@ def generate_demotivator(image_bytes: bytes, text: str) -> bytes:
         width=2
     )
 
-    # Split text into Title and Subtitle
     title_text = text.strip()
     subtitle_text = ""
     for sep in [";", "\n", "|"]:
@@ -262,7 +255,6 @@ def generate_demotivator(image_bytes: bytes, text: str) -> bytes:
 
     font_file = str(TIMES_FONT_PATH) if TIMES_FONT_PATH.exists() else str(FONT_PATH)
 
-    # Draw Title (Large serif)
     title_size = 46
     try:
         title_font = ImageFont.truetype(font_file, title_size)
@@ -275,7 +267,6 @@ def generate_demotivator(image_bytes: bytes, text: str) -> bytes:
     title_y = img_y + target_img_h + border_gap + 20
     draw.text((title_x, title_y), title_text, font=title_font, fill=(255, 255, 255))
 
-    # Draw Subtitle (Medium font)
     if subtitle_text:
         sub_size = 24
         try:
@@ -298,30 +289,22 @@ def generate_demotivator(image_bytes: bytes, text: str) -> bytes:
 # 3. ШАКАЛИЗАТОР / ПРОЖАРКА (.шакал / .дипфрай)
 # -------------------------------------------------------------
 def generate_deepfry(image_bytes: bytes) -> bytes:
-    """Overheats contrast, saturation, sharpness and compresses down to 5% JPEG for extreme shitpost vibes."""
     image = Image.open(io.BytesIO(image_bytes))
     image = ImageOps.exif_transpose(image)
     image = image.convert("RGB")
 
-    # Boost color saturation
     image = ImageEnhance.Color(image).enhance(2.8)
-    # Boost contrast
     image = ImageEnhance.Contrast(image).enhance(2.2)
-    # Boost sharpness
     image = ImageEnhance.Sharpness(image).enhance(4.0)
-    # Edge enhance
     image = image.filter(ImageFilter.EDGE_ENHANCE_MORE)
 
-    # First rough compression
     buf1 = io.BytesIO()
     image.save(buf1, format="JPEG", quality=15)
     
-    # Reload and blast contrast one more time
     img2 = Image.open(io.BytesIO(buf1.getvalue()))
     img2 = ImageEnhance.Contrast(img2).enhance(1.8)
     img2 = ImageEnhance.Color(img2).enhance(1.5)
 
-    # Final ultra-low-quality save
     output_io = io.BytesIO()
     img2.save(output_io, format="JPEG", quality=8)
     return output_io.getvalue()
@@ -331,7 +314,6 @@ def generate_deepfry(image_bytes: bytes) -> bytes:
 # 4. СПИЧ-БАБЛ / SPEECH BUBBLE (.бабл)
 # -------------------------------------------------------------
 def generate_speech_bubble(image_bytes: bytes) -> bytes:
-    """Adds a transparent speech bubble tail cutout at the top of the image."""
     image = Image.open(io.BytesIO(image_bytes))
     image = ImageOps.exif_transpose(image)
     image = image.convert("RGBA")
@@ -339,16 +321,13 @@ def generate_speech_bubble(image_bytes: bytes) -> bytes:
     w, h = image.size
     bubble_h = int(h * 0.18)
 
-    # Draw oval speech bubble with white fill on top
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # Bubble oval
     draw.ellipse(
         [(-int(w * 0.1), -bubble_h), (int(w * 1.1), bubble_h)],
         fill=(255, 255, 255, 255)
     )
-    # Pointer tail pointing down
     tail_x = int(w * 0.35)
     draw.polygon(
         [(tail_x, bubble_h - 10), (tail_x + 35, bubble_h - 10), (tail_x + 10, bubble_h + int(h * 0.08))],
@@ -356,7 +335,181 @@ def generate_speech_bubble(image_bytes: bytes) -> bytes:
     )
 
     combined = Image.alpha_composite(image, overlay).convert("RGB")
-
     output_io = io.BytesIO()
     combined.save(output_io, format="JPEG", quality=90)
+    return output_io.getvalue()
+
+
+# -------------------------------------------------------------
+# 5. СИММЕТРИЯ ЛИЦА / МИРРОР (.лево / .право)
+# -------------------------------------------------------------
+def generate_symmetry(image_bytes: bytes, side: str = "left") -> bytes:
+    """Mirrors the left or right half of the picture to create funny alien symmetrical faces."""
+    image = Image.open(io.BytesIO(image_bytes))
+    image = ImageOps.exif_transpose(image)
+    image = image.convert("RGB")
+    
+    w, h = image.size
+    half_w = w // 2
+
+    if side == "left":
+        left_half = image.crop((0, 0, half_w, h))
+        flipped_left = ImageOps.mirror(left_half)
+        res = Image.new("RGB", (w, h))
+        res.paste(left_half, (0, 0))
+        res.paste(flipped_left, (half_w, 0))
+    else:
+        right_half = image.crop((half_w, 0, w, h))
+        flipped_right = ImageOps.mirror(right_half)
+        res = Image.new("RGB", (w, h))
+        res.paste(flipped_right, (0, 0))
+        res.paste(right_half, (half_w, 0))
+
+    output_io = io.BytesIO()
+    res.save(output_io, format="JPEG", quality=92)
+    return output_io.getvalue()
+
+
+# -------------------------------------------------------------
+# 6. ВОЛЧЬЯ ПАЦАНСКАЯ ЦИТАТА / СТЭТХЕМ (.волк / .цитата)
+# -------------------------------------------------------------
+def generate_wolf_quote(image_bytes: bytes, text: str) -> bytes:
+    """Black and white atmospheric quote with dark vignette and signature."""
+    image = Image.open(io.BytesIO(image_bytes))
+    image = ImageOps.exif_transpose(image)
+    
+    # Convert to black and white with high drama
+    image = ImageOps.grayscale(image).convert("RGB")
+    image = ImageEnhance.Contrast(image).enhance(1.4)
+    image = ImageEnhance.Brightness(image).enhance(0.75)
+
+    w, h = image.size
+    draw = ImageDraw.Draw(image)
+
+    # Split quote and author (default: © Джейсон Стэтхем / © Ауф)
+    quote_body = text.strip()
+    author = "© Джейсон Стэтхем"
+    for sep in [";", "\n", "|"]:
+        if sep in text:
+            parts = text.split(sep, 1)
+            quote_body = parts[0].strip()
+            author = f"© {parts[1].strip()}"
+            break
+
+    quote_formatted = f"«{quote_body}»"
+
+    font_file = str(TIMES_FONT_PATH) if TIMES_FONT_PATH.exists() else str(FONT_PATH)
+    font_size = max(24, int(h * 0.065))
+    try:
+        font = ImageFont.truetype(font_file, font_size)
+        author_font = ImageFont.truetype(font_file, int(font_size * 0.65))
+    except Exception:
+        font = ImageFont.load_default()
+        author_font = font
+
+    # Wrap quote lines
+    chars_per_line = max(10, int(w / (font_size * 0.45)))
+    lines = textwrap.wrap(quote_formatted, width=chars_per_line)
+    
+    total_text_h = len(lines) * int(font_size * 1.3) + int(font_size * 1.2)
+    y_start = h - int(h * 0.1) - total_text_h
+
+    # Draw semi-transparent dark gradient bar at bottom for readability
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        lx = (w - lw) // 2
+        ly = y_start + (i * int(font_size * 1.3))
+        # Draw with slight shadow
+        draw.text((lx + 2, ly + 2), line, font=font, fill=(0, 0, 0))
+        draw.text((lx, ly), line, font=font, fill=(255, 255, 255))
+
+    # Draw author
+    bbox_a = draw.textbbox((0, 0), author, font=author_font)
+    aw = bbox_a[2] - bbox_a[0]
+    ax = (w - aw) // 2
+    ay = y_start + (len(lines) * int(font_size * 1.3)) + 10
+    draw.text((ax + 2, ay + 2), author, font=author_font, fill=(0, 0, 0))
+    draw.text((ax, ay), author, font=author_font, fill=(220, 220, 220))
+
+    output_io = io.BytesIO()
+    image.save(output_io, format="JPEG", quality=90)
+    return output_io.getvalue()
+
+
+# -------------------------------------------------------------
+# 7. ТРАУР / RIP (.рип / .память)
+# -------------------------------------------------------------
+def generate_rip(image_bytes: bytes) -> bytes:
+    """Black-and-white mourning portrait with black ribbon in the corner and candle/text."""
+    image = Image.open(io.BytesIO(image_bytes))
+    image = ImageOps.exif_transpose(image)
+    image = ImageOps.grayscale(image).convert("RGB")
+    
+    w, h = image.size
+    draw = ImageDraw.Draw(image)
+
+    # Black mourning ribbon in bottom-right corner
+    ribbon_size = int(min(w, h) * 0.35)
+    draw.polygon(
+        [(w, h - ribbon_size), (w, h), (w - ribbon_size, h)],
+        fill=(15, 15, 15)
+    )
+
+    # Text at the bottom left
+    font_file = str(TIMES_FONT_PATH) if TIMES_FONT_PATH.exists() else str(FONT_PATH)
+    font_size = max(20, int(h * 0.05))
+    try:
+        font = ImageFont.truetype(font_file, font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    text = "Помним... Любим... Скорбим..."
+    draw.text((int(w * 0.05) + 2, h - int(h * 0.08) + 2), text, font=font, fill=(0, 0, 0))
+    draw.text((int(w * 0.05), h - int(h * 0.08)), text, font=font, fill=(255, 255, 255))
+
+    output_io = io.BytesIO()
+    image.save(output_io, format="JPEG", quality=90)
+    return output_io.getvalue()
+
+
+# -------------------------------------------------------------
+# 8. СРОЧНЫЕ НОВОСТИ / BREAKING NEWS (.новости / .news)
+# -------------------------------------------------------------
+def generate_breaking_news(image_bytes: bytes, text: str) -> bytes:
+    """Adds a realistic TV breaking news banner at the bottom."""
+    image = Image.open(io.BytesIO(image_bytes))
+    image = ImageOps.exif_transpose(image)
+    image = image.convert("RGB")
+
+    w, h = image.size
+    draw = ImageDraw.Draw(image)
+
+    banner_h = int(h * 0.18)
+    top_bar_h = int(banner_h * 0.38)
+    y_banner = h - banner_h
+
+    # Top red bar ("СРОЧНЫЕ НОВОСТИ")
+    draw.rectangle([(0, y_banner), (w, y_banner + top_bar_h)], fill=(200, 20, 20))
+    
+    # Bottom dark blue bar for ticker headline
+    draw.rectangle([(0, y_banner + top_bar_h), (w, h)], fill=(25, 30, 45))
+
+    font_file = str(FONT_PATH)
+    try:
+        header_font = ImageFont.truetype(font_file, max(16, int(top_bar_h * 0.75)))
+        ticker_font = ImageFont.truetype(font_file, max(18, int((banner_h - top_bar_h) * 0.65)))
+    except Exception:
+        header_font = ImageFont.load_default()
+        ticker_font = ImageFont.load_default()
+
+    # Draw Header "СРОЧНЫЕ НОВОСТИ" / "BREAKING NEWS"
+    draw.text((int(w * 0.04), y_banner + 3), "● СРОЧНЫЕ НОВОСТИ", font=header_font, fill=(255, 255, 255))
+
+    # Draw user headline
+    headline = text.upper() if text else "ШОКИРУЮЩИЕ ПОДРОБНОСТИ В ЭФИРЕ"
+    draw.text((int(w * 0.04), y_banner + top_bar_h + 8), headline, font=ticker_font, fill=(255, 255, 100))
+
+    output_io = io.BytesIO()
+    image.save(output_io, format="JPEG", quality=90)
     return output_io.getvalue()

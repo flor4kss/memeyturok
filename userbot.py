@@ -14,7 +14,11 @@ from bot.meme_maker import (
     generate_meme,
     generate_demotivator,
     generate_deepfry,
-    generate_speech_bubble
+    generate_speech_bubble,
+    generate_symmetry,
+    generate_wolf_quote,
+    generate_rip,
+    generate_breaking_news
 )
 
 load_dotenv()
@@ -30,7 +34,7 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
 SESSION_STRING = os.getenv("SESSION_STRING")
 PORT = int(os.getenv("PORT", "8080"))
 
-# Whitelisted usernames who can trigger commands
+# Whitelisted usernames (without @)
 WHITELIST_USERNAMES = ["vextert"]
 extra_users = os.getenv("WHITELIST_USERS", "")
 if extra_users:
@@ -54,35 +58,35 @@ client = TelegramClient(
 
 
 async def is_authorized_sender(event: events.NewMessage.Event) -> bool:
-    """Checks if sender is the account owner or in the whitelist."""
     if event.out:
         return True
-    
+    if event.is_private:
+        return True
+
     sender = await event.get_sender()
     if not sender:
         return False
-    
+
     username = (getattr(sender, "username", None) or "").lower()
     if username in WHITELIST_USERNAMES:
         return True
-        
+
     return False
 
 
 @client.on(events.NewMessage())
 async def handle_commands(event: events.NewMessage.Event):
-    # Check permissions
-    if not await is_authorized_sender(event):
+    text = (event.raw_text or "").strip()
+    if not text:
         return
 
-    text = (event.raw_text or "").strip()
     lower_text = text.lower()
     
     command_type = None
     payload = ""
 
     # 1. Classic Impact Meme: .м, .m, .meme, .мем
-    for prefix in [".м ", ".m ", ".meme ", ".мем "]:
+    for prefix in [".м ", ".m ", ".meme ", ".мем ", ".м\n", ".m\n"]:
         if lower_text.startswith(prefix):
             command_type = "meme"
             payload = text[len(prefix):].strip()
@@ -90,29 +94,72 @@ async def handle_commands(event: events.NewMessage.Event):
 
     # 2. Demotivator: .дем, .dem
     if not command_type:
-        for prefix in [".дем ", ".dem "]:
+        for prefix in [".дем ", ".dem ", ".дем\n", ".dem\n"]:
             if lower_text.startswith(prefix):
                 command_type = "demotivator"
                 payload = text[len(prefix):].strip()
                 break
 
-    # 3. Deep Fry / Шакализатор: .шакал, .дипфрай, .fry, .жарить
+    # 3. Wolf Quote: .волк, .цитата, .стэтхем, .стетхем
+    if not command_type:
+        for prefix in [".волк ", ".цитата ", ".стэтхем ", ".стетхем ", ".волк\n", ".цитата\n"]:
+            if lower_text.startswith(prefix):
+                command_type = "wolf"
+                payload = text[len(prefix):].strip()
+                break
+
+    # 4. Breaking News: .новости, .news
+    if not command_type:
+        for prefix in [".новости ", ".news ", ".новости\n", ".news\n"]:
+            if lower_text.startswith(prefix):
+                command_type = "news"
+                payload = text[len(prefix):].strip()
+                break
+
+    # 5. Deep Fry / Шакализатор: .шакал, .дипфрай, .fry, .жарить
     if not command_type:
         for cmd in [".шакал", ".дипфрай", ".fry", ".жарить"]:
-            if lower_text == cmd or lower_text.startswith(cmd + " "):
+            if lower_text == cmd or lower_text.startswith(cmd + " ") or lower_text.startswith(cmd + "\n"):
                 command_type = "deepfry"
                 break
 
-    # 4. Speech Bubble: .бабл, .bubble
+    # 6. Speech Bubble: .бабл, .bubble
     if not command_type:
         for cmd in [".бабл", ".bubble"]:
-            if lower_text == cmd or lower_text.startswith(cmd + " "):
+            if lower_text == cmd or lower_text.startswith(cmd + " ") or lower_text.startswith(cmd + "\n"):
                 command_type = "bubble"
+                break
+
+    # 7. Symmetry Left: .лево, .left
+    if not command_type:
+        for cmd in [".лево", ".left"]:
+            if lower_text == cmd or lower_text.startswith(cmd + " "):
+                command_type = "symmetry_left"
+                break
+
+    # 8. Symmetry Right: .право, .right
+    if not command_type:
+        for cmd in [".право", ".right"]:
+            if lower_text == cmd or lower_text.startswith(cmd + " "):
+                command_type = "symmetry_right"
+                break
+
+    # 9. RIP / Mourning: .рип, .rip, .память
+    if not command_type:
+        for cmd in [".рип", ".rip", ".память"]:
+            if lower_text == cmd or lower_text.startswith(cmd + " "):
+                command_type = "rip"
                 break
 
     # If no command matched, ignore
     if not command_type:
         return
+
+    # Check authorization
+    if not await is_authorized_sender(event):
+        return
+
+    logger.info(f"Обработка команды '{command_type}' от {'владельца' if event.out else 'друга'}")
 
     # Check if message is a reply
     if not event.is_reply:
@@ -125,7 +172,7 @@ async def handle_commands(event: events.NewMessage.Event):
         return
 
     reply_msg = await event.get_reply_message()
-    if not reply_msg or not (reply_msg.photo or reply_msg.document or reply_msg.sticker):
+    if not reply_msg or not (reply_msg.photo or reply_msg.document or reply_msg.sticker or reply_msg.media):
         if event.out:
             status_msg = await event.edit("⚠️ Сообщение, на которое вы ответили, не содержит картинки!")
             await asyncio.sleep(3)
@@ -146,7 +193,7 @@ async def handle_commands(event: events.NewMessage.Event):
         if not image_bytes:
             raise ValueError("Не удалось скачать картинку")
 
-        # Process meme
+        # Execute chosen effect
         if command_type == "meme":
             if not payload:
                 raise ValueError("Укажите текст мема!")
@@ -155,26 +202,34 @@ async def handle_commands(event: events.NewMessage.Event):
             if not payload:
                 raise ValueError("Укажите текст демотиватора (Заголовок; Подзаголовок)")
             out_bytes = generate_demotivator(image_bytes, payload)
+        elif command_type == "wolf":
+            if not payload:
+                raise ValueError("Укажите текст цитаты!")
+            out_bytes = generate_wolf_quote(image_bytes, payload)
+        elif command_type == "news":
+            out_bytes = generate_breaking_news(image_bytes, payload)
         elif command_type == "deepfry":
             out_bytes = generate_deepfry(image_bytes)
         elif command_type == "bubble":
             out_bytes = generate_speech_bubble(image_bytes)
+        elif command_type == "symmetry_left":
+            out_bytes = generate_symmetry(image_bytes, side="left")
+        elif command_type == "symmetry_right":
+            out_bytes = generate_symmetry(image_bytes, side="right")
+        elif command_type == "rip":
+            out_bytes = generate_rip(image_bytes)
         else:
             return
 
         out_io = io.BytesIO(out_bytes)
         out_io.name = "result.jpg"
 
-        await client.send_file(
-            entity=event.chat_id,
-            file=out_io,
-            reply_to=reply_msg.id
-        )
+        await event.reply(file=out_io)
 
-        if event.out:
+        if event.out and status_msg:
             await event.delete()
             
-        logger.info(f"Команда {command_type} успешно выполнена в чате {event.chat_id}")
+        logger.info(f"Команда {command_type} успешно завершена")
 
     except Exception as e:
         logger.exception("Ошибка обработки: %s", e)
@@ -264,12 +319,7 @@ async def main():
     me = await client.get_me()
     print("\n" + "=" * 60)
     print(f"✅ Юзербот успешно запущен под аккаунтом: {me.first_name} (@{me.username})")
-    print(f"👥 Доверенные пользователи (Whitelist): @{', @'.join(WHITELIST_USERNAMES)}")
-    print("💡 Доступные команды:")
-    print("   • .м Текст мема              -> Классический мем Impact")
-    print("   • .дем Заголовок; Подзаголовок -> Демотиватор")
-    print("   • .шакал                     -> Прожарка / дипфрай")
-    print("   • .бабл                      -> Спич-бабл над головой")
+    print("👥 Доступен для вас и всех друзей в личках!")
     print("=" * 60)
     print("🔥 Юзербот активен в реальном времени!\n")
     
