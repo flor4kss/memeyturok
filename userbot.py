@@ -8,7 +8,7 @@ from aiohttp import web
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 
 from bot.meme_maker import (
     generate_meme,
@@ -20,6 +20,7 @@ from bot.meme_maker import (
     generate_rip,
     generate_breaking_news
 )
+from bot.ai_helper import query_groq
 
 load_dotenv()
 
@@ -34,13 +35,11 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
 SESSION_STRING = os.getenv("SESSION_STRING")
 PORT = int(os.getenv("PORT", "8080"))
 
-# Whitelisted usernames (without @)
 WHITELIST_USERNAMES = ["vextert"]
 extra_users = os.getenv("WHITELIST_USERS", "")
 if extra_users:
     WHITELIST_USERNAMES.extend([u.strip().lstrip("@").lower() for u in extra_users.split(",") if u.strip()])
 
-# Initialize Client
 if SESSION_STRING:
     session = StringSession(SESSION_STRING)
 else:
@@ -55,6 +54,24 @@ client = TelegramClient(
     app_version="5.2.3 x64",
     lang_code="ru"
 )
+
+EN_TO_RU = str.maketrans(
+    "`qwertyuiop[]asdfghjkl;'zxcvbnm,./~QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>?@",
+    "ёйцукенгшщзхъфывапролджэячсмитьбю.ЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,@\""
+)
+RU_TO_EN = str.maketrans(
+    "ёйцукенгшщзхъфывапролджэячсмитьбю.ЁЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,",
+    "`qwertyuiop[]asdfghjkl;'zxcvbnm,./~QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>?"
+)
+
+
+def switch_layout(text: str) -> str:
+    cyrillic_chars = sum(1 for c in text if 'а' <= c.lower() <= 'я' or c.lower() == 'ё')
+    latin_chars = sum(1 for c in text if 'a' <= c.lower() <= 'z')
+    if cyrillic_chars > latin_chars:
+        return text.translate(RU_TO_EN)
+    else:
+        return text.translate(EN_TO_RU)
 
 
 async def is_authorized_sender(event: events.NewMessage.Event) -> bool:
@@ -81,18 +98,197 @@ async def handle_commands(event: events.NewMessage.Event):
         return
 
     lower_text = text.lower()
-    
+
+    # -------------------------------------------------------------
+    # 1. AI ПЕРСОНАЖИ И НЕЙРОСЕТЬ (GROQ / LLAMA 3.3)
+    # -------------------------------------------------------------
+    ai_role = None
+    ai_header = ""
+    ai_query = ""
+    is_clean_mode = False
+
+    # Check for clean/stealth mode prefix (e.g. .патрик- or .ии-)
+    # Character commands list: (prefixes, role, header)
+    ai_definitions = [
+        ([".патрик-", ".patrick-"], "patrick", "⭐️ **Патрик Стар:**", True),
+        ([".патрик", ".patrick"], "patrick", "⭐️ **Патрик Стар:**", False),
+        ([".стоун-", ".сэнку-", ".stone-"], "stone", "🧪 **Сэнку (Dr. Stone):**", True),
+        ([".стоун", ".сэнку", ".сенку", ".stone"], "stone", "🧪 **Сэнку (Dr. Stone):**", False),
+        ([".стэтхем-", ".statham-"], "statham", "🐺 **Джейсон Стэтхем:**", True),
+        ([".стэтхем", ".стетхем", ".statham"], "statham", "🐺 **Джейсон Стэтхем:**", False),
+        ([".гопник-", ".пацан-"], "gopnik", "🧢 **Пацанчик с района:**", True),
+        ([".гопник", ".пацан"], "gopnik", "🧢 **Пацанчик с района:**", False),
+        ([".бабка-", ".дед-"], "babka", "👵 **Бабка у подъезда:**", True),
+        ([".бабка", ".дед"], "babka", "👵 **Бабка у подъезда:**", False),
+        ([".кратко-", ".суть-", ".tldr-"], "summary", "📋 **Краткая суть:**", True),
+        ([".кратко", ".суть", ".tldr"], "summary", "📋 **Краткая суть:**", False),
+        ([".ии- ", ".жпт- ", ".ai- ", ".gpt- "], "default", "🤖 **AI-Ответ (Groq):**", True),
+        ([".ии ", ".жпт ", ".ai ", ".gpt ", ".ии\n", ".жпт\n"], "default", "🤖 **AI-Ответ (Groq):**", False),
+    ]
+
+    for prefixes, role, header, clean in ai_definitions:
+        for p in prefixes:
+            if lower_text == p.strip() or lower_text.startswith(p if p.endswith(" ") or p.endswith("\n") or p.endswith("-") else p + " "):
+                ai_role = role
+                ai_header = header
+                is_clean_mode = clean
+                # Extract query after prefix
+                ai_query = text[len(p.strip()):].strip()
+                break
+        if ai_role:
+            break
+
+    if ai_role:
+        if not await is_authorized_sender(event):
+            return
+
+        context = ""
+        if event.is_reply:
+            reply_msg = await event.get_reply_message()
+            if reply_msg and reply_msg.text:
+                context = reply_msg.text
+
+        if not ai_query and not context:
+            hint = "⚠️ Задайте вопрос или ответьте на сообщение этой командой!"
+            if event.out:
+                msg = await event.edit(hint)
+                await asyncio.sleep(3)
+                await msg.delete()
+            else:
+                await event.reply(hint)
+            return
+
+        if event.out:
+            msg_to_edit = await event.edit("🧠 *Генерирую...*" if not is_clean_mode else "...")
+        else:
+            msg_to_edit = await event.reply("🧠 *Генерирую...*" if not is_clean_mode else "...")
+
+        prompt = ai_query or "Отреагируй на сообщение выше в своем характере."
+        answer = await query_groq(user_prompt=prompt, system_role=ai_role, context_text=context)
+
+        # Clean mode sends purely the AI text without headers or dividers
+        if is_clean_mode:
+            formatted_response = answer
+        else:
+            formatted_response = (
+                f"{ai_header}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"{answer}\n"
+                f"━━━━━━━━━━━━━━━━━━"
+            )
+
+        try:
+            await msg_to_edit.edit(formatted_response, parse_mode="Markdown")
+        except Exception:
+            await msg_to_edit.edit(formatted_response)
+        return
+
+    # -------------------------------------------------------------
+    # 2. АНИМАЦИЯ ПЕЧАТИ: .тайп <текст> / .type <текст>
+    # -------------------------------------------------------------
+    for prefix in [".тайп ", ".type "]:
+        if lower_text.startswith(prefix):
+            if not await is_authorized_sender(event):
+                return
+            target_text = text[len(prefix):].strip()
+            if not target_text:
+                return
+
+            msg_to_edit = event if event.out else await event.reply("▌")
+            step = 2 if len(target_text) > 30 else 1
+            for i in range(0, len(target_text), step):
+                current_str = target_text[:i + step]
+                try:
+                    await msg_to_edit.edit(current_str + "▌")
+                    await asyncio.sleep(0.06)
+                except FloodWaitError as fwe:
+                    await asyncio.sleep(fwe.seconds)
+                except Exception:
+                    pass
+
+            try:
+                await msg_to_edit.edit(target_text)
+            except Exception:
+                pass
+            return
+
+    # -------------------------------------------------------------
+    # 3. АНИМАЦИЯ ВЗЛОМА: .взлом <цель>
+    # -------------------------------------------------------------
+    for prefix in [".взлом", ".hack", ".хак"]:
+        if lower_text == prefix or lower_text.startswith(prefix + " "):
+            if not await is_authorized_sender(event):
+                return
+            target = text[len(prefix):].strip() or "Пентагона"
+            msg_to_edit = event if event.out else await event.reply("⏳ Запуск взлома...")
+            stages = [
+                f"💻 [░░░░░░░░░░] 0% Подключение к спутникам...",
+                f"📡 [██░░░░░░░░] 20% Поиск уязвимостей {target}...",
+                f"🔑 [████░░░░░░] 45% Обход двухфакторной защиты...",
+                f"📥 [██████░░░░] 65% Скачивание секретных переписок...",
+                f"💾 [████████░░] 85% Загрузка компромата в облако...",
+                f"☠️ [██████████] 100% Взлом {target} успешно завершён!\n\n⚠️ **Результат:** Найдено 1488 гигабайт папок с мемами."
+            ]
+            for stage in stages:
+                try:
+                    await msg_to_edit.edit(stage)
+                    await asyncio.sleep(0.7)
+                except Exception:
+                    pass
+            return
+
+    # -------------------------------------------------------------
+    # 4. АНИМАЦИЯ СЕРДЕЦ: .сердце / .love
+    # -------------------------------------------------------------
+    if lower_text in [".сердце", ".love", ".любовь"]:
+        if not await is_authorized_sender(event):
+            return
+        msg_to_edit = event if event.out else await event.reply("🖤")
+        hearts = ["🖤", "💜", "💙", "💚", "💛", "🧡", "❤️", "💖", "✨ С любовью! ✨"]
+        for h in hearts:
+            try:
+                await msg_to_edit.edit(h)
+                await asyncio.sleep(0.35)
+            except Exception:
+                pass
+        return
+
+    # -------------------------------------------------------------
+    # 5. ИСПРАВЛЕНИЕ РАСКЛАДКИ: .р / .раскладка
+    # -------------------------------------------------------------
+    if lower_text in [".р", ".раскладка", ".layout", ".switch"]:
+        if not await is_authorized_sender(event):
+            return
+        if not event.is_reply:
+            hint = await (event.edit("⚠️ Ответьте на сообщение, чтобы исправить его раскладку!") if event.out else event.reply("⚠️ Ответьте на сообщение!"))
+            await asyncio.sleep(3)
+            await hint.delete()
+            return
+            
+        reply_msg = await event.get_reply_message()
+        if not reply_msg or not reply_msg.text:
+            return
+            
+        fixed_text = switch_layout(reply_msg.text)
+        res_str = f"🔄 **Исправленная раскладка:**\n━━━━━━━━━━━━━━━━━━\n{fixed_text}\n━━━━━━━━━━━━━━━━━━"
+        if event.out:
+            await event.edit(res_str, parse_mode="Markdown")
+        else:
+            await event.reply(res_str, parse_mode="Markdown")
+        return
+
+    # -------------------------------------------------------------
+    # 6. ГЕНЕРАТОРЫ МЕМОВ (ТРЕБУЮТ РЕПЛАЙ НА КАРТИНКУ)
+    # -------------------------------------------------------------
     command_type = None
     payload = ""
 
-    # 1. Classic Impact Meme: .м, .m, .meme, .мем
     for prefix in [".м ", ".m ", ".meme ", ".мем ", ".м\n", ".m\n"]:
         if lower_text.startswith(prefix):
             command_type = "meme"
             payload = text[len(prefix):].strip()
             break
 
-    # 2. Demotivator: .дем, .dem
     if not command_type:
         for prefix in [".дем ", ".dem ", ".дем\n", ".dem\n"]:
             if lower_text.startswith(prefix):
@@ -100,68 +296,56 @@ async def handle_commands(event: events.NewMessage.Event):
                 payload = text[len(prefix):].strip()
                 break
 
-    # 3. Wolf Quote: .волк, .цитата, .стэтхем, .стетхем
     if not command_type:
-        for prefix in [".волк ", ".цитата ", ".стэтхем ", ".стетхем ", ".волк\n", ".цитата\n"]:
+        for prefix in [".волк ", ".цитата "]:
             if lower_text.startswith(prefix):
                 command_type = "wolf"
                 payload = text[len(prefix):].strip()
                 break
 
-    # 4. Breaking News: .новости, .news
     if not command_type:
-        for prefix in [".новости ", ".news ", ".новости\n", ".news\n"]:
+        for prefix in [".новости ", ".news "]:
             if lower_text.startswith(prefix):
                 command_type = "news"
                 payload = text[len(prefix):].strip()
                 break
 
-    # 5. Deep Fry / Шакализатор: .шакал, .дипфрай, .fry, .жарить
     if not command_type:
         for cmd in [".шакал", ".дипфрай", ".fry", ".жарить"]:
-            if lower_text == cmd or lower_text.startswith(cmd + " ") or lower_text.startswith(cmd + "\n"):
+            if lower_text == cmd or lower_text.startswith(cmd + " "):
                 command_type = "deepfry"
                 break
 
-    # 6. Speech Bubble: .бабл, .bubble
     if not command_type:
         for cmd in [".бабл", ".bubble"]:
-            if lower_text == cmd or lower_text.startswith(cmd + " ") or lower_text.startswith(cmd + "\n"):
+            if lower_text == cmd or lower_text.startswith(cmd + " "):
                 command_type = "bubble"
                 break
 
-    # 7. Symmetry Left: .лево, .left
     if not command_type:
         for cmd in [".лево", ".left"]:
             if lower_text == cmd or lower_text.startswith(cmd + " "):
                 command_type = "symmetry_left"
                 break
 
-    # 8. Symmetry Right: .право, .right
     if not command_type:
         for cmd in [".право", ".right"]:
             if lower_text == cmd or lower_text.startswith(cmd + " "):
                 command_type = "symmetry_right"
                 break
 
-    # 9. RIP / Mourning: .рип, .rip, .память
     if not command_type:
         for cmd in [".рип", ".rip", ".память"]:
             if lower_text == cmd or lower_text.startswith(cmd + " "):
                 command_type = "rip"
                 break
 
-    # If no command matched, ignore
     if not command_type:
         return
 
-    # Check authorization
     if not await is_authorized_sender(event):
         return
 
-    logger.info(f"Обработка команды '{command_type}' от {'владельца' if event.out else 'друга'}")
-
-    # Check if message is a reply
     if not event.is_reply:
         if event.out:
             status_msg = await event.edit("⚠️ Ответьте (Reply) этой командой на картинку!")
@@ -193,7 +377,6 @@ async def handle_commands(event: events.NewMessage.Event):
         if not image_bytes:
             raise ValueError("Не удалось скачать картинку")
 
-        # Execute chosen effect
         if command_type == "meme":
             if not payload:
                 raise ValueError("Укажите текст мема!")
@@ -319,7 +502,8 @@ async def main():
     me = await client.get_me()
     print("\n" + "=" * 60)
     print(f"✅ Юзербот успешно запущен под аккаунтом: {me.first_name} (@{me.username})")
-    print("👥 Доступен для вас и всех друзей в личках!")
+    print("🧠 AI Персонажи: .патрик, .стоун, .стэтхем, .гопник, .бабка, .кратко, .ии")
+    print("🤫 Чистый режим без плашек: .патрик-, .стоун-, .ии-")
     print("=" * 60)
     print("🔥 Юзербот активен в реальном времени!\n")
     
