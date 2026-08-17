@@ -30,7 +30,13 @@ API_HASH = os.getenv("TELEGRAM_API_HASH", "b18441a1ff607e10a989891a5462e627")
 SESSION_STRING = os.getenv("SESSION_STRING")
 PORT = int(os.getenv("PORT", "8080"))
 
-# Initialize Client: StringSession for Render cloud, file session for local
+# Whitelisted usernames who can trigger commands
+WHITELIST_USERNAMES = ["vextert"]
+extra_users = os.getenv("WHITELIST_USERS", "")
+if extra_users:
+    WHITELIST_USERNAMES.extend([u.strip().lstrip("@").lower() for u in extra_users.split(",") if u.strip()])
+
+# Initialize Client
 if SESSION_STRING:
     session = StringSession(SESSION_STRING)
 else:
@@ -47,8 +53,28 @@ client = TelegramClient(
 )
 
 
-@client.on(events.NewMessage(outgoing=True))
+async def is_authorized_sender(event: events.NewMessage.Event) -> bool:
+    """Checks if sender is the account owner or in the whitelist."""
+    if event.out:
+        return True
+    
+    sender = await event.get_sender()
+    if not sender:
+        return False
+    
+    username = (getattr(sender, "username", None) or "").lower()
+    if username in WHITELIST_USERNAMES:
+        return True
+        
+    return False
+
+
+@client.on(events.NewMessage())
 async def handle_commands(event: events.NewMessage.Event):
+    # Check permissions
+    if not await is_authorized_sender(event):
+        return
+
     text = (event.raw_text or "").strip()
     lower_text = text.lower()
     
@@ -70,7 +96,7 @@ async def handle_commands(event: events.NewMessage.Event):
                 payload = text[len(prefix):].strip()
                 break
 
-    # 3. Deep Fry / Шакализатор: .шакал, .дипфрай, .fry
+    # 3. Deep Fry / Шакализатор: .шакал, .дипфрай, .fry, .жарить
     if not command_type:
         for cmd in [".шакал", ".дипфрай", ".fry", ".жарить"]:
             if lower_text == cmd or lower_text.startswith(cmd + " "):
@@ -84,25 +110,33 @@ async def handle_commands(event: events.NewMessage.Event):
                 command_type = "bubble"
                 break
 
-    # If no command matched, skip
+    # If no command matched, ignore
     if not command_type:
         return
 
     # Check if message is a reply
     if not event.is_reply:
-        status_msg = await event.edit("⚠️ Ответьте (Reply) этой командой на картинку!")
-        await asyncio.sleep(3)
-        await status_msg.delete()
+        if event.out:
+            status_msg = await event.edit("⚠️ Ответьте (Reply) этой командой на картинку!")
+            await asyncio.sleep(3)
+            await status_msg.delete()
+        else:
+            await event.reply("⚠️ Ответьте (Reply) этой командой на картинку!")
         return
 
     reply_msg = await event.get_reply_message()
     if not reply_msg or not (reply_msg.photo or reply_msg.document or reply_msg.sticker):
-        status_msg = await event.edit("⚠️ Сообщение, на которое вы ответили, не содержит картинки!")
-        await asyncio.sleep(3)
-        await status_msg.delete()
+        if event.out:
+            status_msg = await event.edit("⚠️ Сообщение, на которое вы ответили, не содержит картинки!")
+            await asyncio.sleep(3)
+            await status_msg.delete()
+        else:
+            await event.reply("⚠️ Сообщение, на которое вы ответили, не содержит картинки!")
         return
 
-    await event.edit("⏳ *Обрабатываю...*", parse_mode="Markdown")
+    status_msg = None
+    if event.out:
+        status_msg = await event.edit("⏳ *Обрабатываю...*", parse_mode="Markdown")
 
     try:
         buffer = io.BytesIO()
@@ -112,7 +146,7 @@ async def handle_commands(event: events.NewMessage.Event):
         if not image_bytes:
             raise ValueError("Не удалось скачать картинку")
 
-        # Execute chosen effect
+        # Process meme
         if command_type == "meme":
             if not payload:
                 raise ValueError("Укажите текст мема!")
@@ -137,14 +171,19 @@ async def handle_commands(event: events.NewMessage.Event):
             reply_to=reply_msg.id
         )
 
-        await event.delete()
+        if event.out:
+            await event.delete()
+            
         logger.info(f"Команда {command_type} успешно выполнена в чате {event.chat_id}")
 
     except Exception as e:
         logger.exception("Ошибка обработки: %s", e)
-        error_msg = await event.edit(f"❌ Ошибка: {e}")
-        await asyncio.sleep(3)
-        await error_msg.delete()
+        if event.out and status_msg:
+            error_msg = await event.edit(f"❌ Ошибка: {e}")
+            await asyncio.sleep(3)
+            await error_msg.delete()
+        else:
+            await event.reply(f"❌ Ошибка: {e}")
 
 
 async def health_check_handler(request: web.Request) -> web.Response:
@@ -225,7 +264,8 @@ async def main():
     me = await client.get_me()
     print("\n" + "=" * 60)
     print(f"✅ Юзербот успешно запущен под аккаунтом: {me.first_name} (@{me.username})")
-    print("💡 Доступные команды в любых личках и чатах:")
+    print(f"👥 Доверенные пользователи (Whitelist): @{', @'.join(WHITELIST_USERNAMES)}")
+    print("💡 Доступные команды:")
     print("   • .м Текст мема              -> Классический мем Impact")
     print("   • .дем Заголовок; Подзаголовок -> Демотиватор")
     print("   • .шакал                     -> Прожарка / дипфрай")
