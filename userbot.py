@@ -4,14 +4,18 @@ import logging
 import os
 import sys
 from pathlib import Path
-import qrcode
 from aiohttp import web
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import SessionPasswordNeededError
 
-from bot.meme_maker import generate_meme
+from bot.meme_maker import (
+    generate_meme,
+    generate_demotivator,
+    generate_deepfry,
+    generate_speech_bubble
+)
 
 load_dotenv()
 
@@ -42,29 +46,49 @@ client = TelegramClient(
     lang_code="ru"
 )
 
-COMMAND_PREFIXES = (".м ", ".m ", ".meme ", ".мем ")
-
 
 @client.on(events.NewMessage(outgoing=True))
-async def handle_meme_command(event: events.NewMessage.Event):
-    text = event.raw_text or ""
+async def handle_commands(event: events.NewMessage.Event):
+    text = (event.raw_text or "").strip()
+    lower_text = text.lower()
     
-    matched_prefix = None
-    for prefix in COMMAND_PREFIXES:
-        if text.lower().startswith(prefix):
-            matched_prefix = prefix
+    command_type = None
+    payload = ""
+
+    # 1. Classic Impact Meme: .м, .m, .meme, .мем
+    for prefix in [".м ", ".m ", ".meme ", ".мем "]:
+        if lower_text.startswith(prefix):
+            command_type = "meme"
+            payload = text[len(prefix):].strip()
             break
 
-    if not matched_prefix:
+    # 2. Demotivator: .дем, .dem
+    if not command_type:
+        for prefix in [".дем ", ".dem "]:
+            if lower_text.startswith(prefix):
+                command_type = "demotivator"
+                payload = text[len(prefix):].strip()
+                break
+
+    # 3. Deep Fry / Шакализатор: .шакал, .дипфрай, .fry
+    if not command_type:
+        for cmd in [".шакал", ".дипфрай", ".fry", ".жарить"]:
+            if lower_text == cmd or lower_text.startswith(cmd + " "):
+                command_type = "deepfry"
+                break
+
+    # 4. Speech Bubble: .бабл, .bubble
+    if not command_type:
+        for cmd in [".бабл", ".bubble"]:
+            if lower_text == cmd or lower_text.startswith(cmd + " "):
+                command_type = "bubble"
+                break
+
+    # If no command matched, skip
+    if not command_type:
         return
 
-    meme_caption = text[len(matched_prefix):].strip()
-    if not meme_caption:
-        status_msg = await event.edit("⚠️ Укажите текст мема, например: `.м Текст мема`")
-        await asyncio.sleep(3)
-        await status_msg.delete()
-        return
-
+    # Check if message is a reply
     if not event.is_reply:
         status_msg = await event.edit("⚠️ Ответьте (Reply) этой командой на картинку!")
         await asyncio.sleep(3)
@@ -78,7 +102,7 @@ async def handle_meme_command(event: events.NewMessage.Event):
         await status_msg.delete()
         return
 
-    await event.edit("⏳ *Создаю мем...*", parse_mode="Markdown")
+    await event.edit("⏳ *Обрабатываю...*", parse_mode="Markdown")
 
     try:
         buffer = io.BytesIO()
@@ -88,22 +112,36 @@ async def handle_meme_command(event: events.NewMessage.Event):
         if not image_bytes:
             raise ValueError("Не удалось скачать картинку")
 
-        meme_bytes = generate_meme(image_bytes, meme_caption)
-        
-        meme_io = io.BytesIO(meme_bytes)
-        meme_io.name = "meme.jpg"
+        # Execute chosen effect
+        if command_type == "meme":
+            if not payload:
+                raise ValueError("Укажите текст мема!")
+            out_bytes = generate_meme(image_bytes, payload)
+        elif command_type == "demotivator":
+            if not payload:
+                raise ValueError("Укажите текст демотиватора (Заголовок; Подзаголовок)")
+            out_bytes = generate_demotivator(image_bytes, payload)
+        elif command_type == "deepfry":
+            out_bytes = generate_deepfry(image_bytes)
+        elif command_type == "bubble":
+            out_bytes = generate_speech_bubble(image_bytes)
+        else:
+            return
+
+        out_io = io.BytesIO(out_bytes)
+        out_io.name = "result.jpg"
 
         await client.send_file(
             entity=event.chat_id,
-            file=meme_io,
+            file=out_io,
             reply_to=reply_msg.id
         )
 
         await event.delete()
-        logger.info(f"Мем успешно отправлен в чат {event.chat_id}")
+        logger.info(f"Команда {command_type} успешно выполнена в чате {event.chat_id}")
 
     except Exception as e:
-        logger.exception("Ошибка при создании мема: %s", e)
+        logger.exception("Ошибка обработки: %s", e)
         error_msg = await event.edit(f"❌ Ошибка: {e}")
         await asyncio.sleep(3)
         await error_msg.delete()
@@ -114,7 +152,6 @@ async def health_check_handler(request: web.Request) -> web.Response:
 
 
 async def start_web_server():
-    """Lightweight server for Render Health Checks"""
     app = web.Application()
     app.router.add_get("/", health_check_handler)
     app.router.add_get("/health", health_check_handler)
@@ -127,6 +164,12 @@ async def start_web_server():
 
 
 async def login_with_qr():
+    try:
+        import qrcode
+    except ImportError:
+        print("Для локального входа установите qrcode: pip install qrcode[pil]")
+        sys.exit(1)
+
     qr_login = await client.qr_login()
     print("\n" + "=" * 60)
     print("📲 ВХОД ЧЕРЕЗ QR-КОД (БЕЗ SMS И КАПЧИ)")
@@ -160,7 +203,6 @@ async def login_with_qr():
 
 
 async def main():
-    # Start health check server for Render Web Service
     try:
         await start_web_server()
     except Exception as e:
@@ -183,9 +225,11 @@ async def main():
     me = await client.get_me()
     print("\n" + "=" * 60)
     print(f"✅ Юзербот успешно запущен под аккаунтом: {me.first_name} (@{me.username})")
-    print("💡 Как пользоваться прямо в переписке:")
-    print("   1. Зайди в любую личку в Telegram.")
-    print("   2. Ответь (Reply) на любую картинку: .м Твой текст")
+    print("💡 Доступные команды в любых личках и чатах:")
+    print("   • .м Текст мема              -> Классический мем Impact")
+    print("   • .дем Заголовок; Подзаголовок -> Демотиватор")
+    print("   • .шакал                     -> Прожарка / дипфрай")
+    print("   • .бабл                      -> Спич-бабл над головой")
     print("=" * 60)
     print("🔥 Юзербот активен в реальном времени!\n")
     
