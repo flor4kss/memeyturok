@@ -7,8 +7,8 @@ from aiogram import Bot, Dispatcher
 from dotenv import load_dotenv
 
 from bot.handlers import router
+from bot.meme_maker import generate_meme, get_template_bytes
 
-# Load .env file if present
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -23,21 +23,45 @@ async def health_check_handler(request: web.Request) -> web.Response:
     })
 
 
+async def meme_image_handler(request: web.Request) -> web.Response:
+    """Dynamically generates and returns meme image for inline Telegram queries."""
+    template = request.query.get("t", "drake")
+    text = request.query.get("q", "")
+
+    img_bytes = get_template_bytes(template)
+    if not img_bytes:
+        img_bytes = get_template_bytes("drake")
+    
+    if not img_bytes:
+        return web.Response(status=404, text="Template not found")
+
+    try:
+        result_bytes = generate_meme(img_bytes, text)
+        return web.Response(
+            body=result_bytes,
+            content_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=86400"}
+        )
+    except Exception as e:
+        logging.error(f"Error generating inline meme: {e}")
+        return web.Response(status=500, text="Internal Error")
+
+
 async def start_web_server():
-    """Starts a minimal HTTP server so Render Web Service marks the deployment as Healthy."""
+    """Starts HTTP server for health-checks and dynamic inline meme generation."""
     app = web.Application()
     app.router.add_get("/", health_check_handler)
     app.router.add_get("/health", health_check_handler)
+    app.router.add_get("/meme_img", meme_image_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
-    logging.info(f"Health check HTTP server started on port {PORT}")
+    logging.info(f"HTTP server (Health & Inline Memes) started on port {PORT}")
 
 
 async def main():
-    # Configure logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -51,15 +75,13 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
 
-    # Start health check server if running on Render / web environment
     try:
         await start_web_server()
     except Exception as e:
-        logging.warning(f"Could not start HTTP health check server: {e}")
+        logging.warning(f"Could not start HTTP server: {e}")
 
-    logging.info("Starting Telegram Meme Bot (polling)...")
+    logging.info("Starting Telegram Meme Bot (polling & inline mode)...")
     
-    # Drop pending updates to avoid spam upon startup
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
